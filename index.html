@@ -1,0 +1,1567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video Trimmer</title>
+  <script src="coi-serviceworker.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-bottom: 40px;
+    }
+
+    h1 {
+      margin: 24px 0 8px;
+      font-size: 1.6rem;
+      letter-spacing: .5px;
+    }
+
+    /* ---- Upload area ---- */
+    #drop-zone {
+      margin: 20px 0;
+      width: 720px;
+      max-width: 95vw;
+      border: 2px dashed #555;
+      border-radius: 12px;
+      padding: 48px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+    }
+    #drop-zone.drag-over { border-color: #7f5af0; background: rgba(127,90,240,.08); }
+    #drop-zone p { font-size: 1.1rem; color: #aaa; }
+    #file-input { display: none; }
+
+    /* ---- Video preview ---- */
+    #preview-section { display: none; width: 100%; margin-top: 12px; }
+
+    #video-area {
+      display: flex;
+      justify-content: center;
+      width: 100%;
+      padding: 0 20px;
+    }
+
+    #video-resizable {
+      position: relative;
+      width: 640px;
+      min-width: 200px;
+      max-width: 100%;
+    }
+
+    /* Resize bar below video */
+    #video-resize-handle {
+      width: 100%;
+      height: 10px;
+      margin-top: 2px;
+      cursor: ns-resize;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      background: #000;
+    }
+    #video-resize-handle:hover {
+      background: #222;
+    }
+    #video-resize-handle::after {
+      content: '';
+      display: block;
+      width: 40px;
+      height: 3px;
+      border-radius: 2px;
+      background: #555;
+    }
+    #video-resize-handle:hover::after {
+      background: #888;
+    }
+
+    #full-width-area {
+      width: 100%;
+      padding: 0 20px;
+    }
+
+    /* ---- Crop wrapper ---- */
+    #video-wrapper {
+      position: relative;
+      width: 100%;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #000;
+    }
+    #video-preview {
+      display: block;
+      width: 100%;
+      border-radius: 8px;
+    }
+
+    /* Crop overlay */
+    #crop-overlay {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      z-index: 3;
+    }
+    #crop-dim-top, #crop-dim-bottom, #crop-dim-left, #crop-dim-right {
+      position: absolute;
+      background: rgba(0,0,0,.55);
+    }
+    #crop-dim-top    { top: 0; left: 0; width: 100%; }
+    #crop-dim-bottom { bottom: 0; left: 0; width: 100%; }
+    #crop-dim-left   { left: 0; }
+    #crop-dim-right  { right: 0; }
+
+    #crop-box {
+      position: absolute;
+      border: 2px solid #2cb67d;
+      pointer-events: all;
+      cursor: move;
+      z-index: 4;
+    }
+    #crop-box::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      /* rule-of-thirds grid */
+      background:
+        linear-gradient(to right, rgba(255,255,255,.15) 1px, transparent 1px) 33.33% 0 / 33.33% 100%,
+        linear-gradient(to bottom, rgba(255,255,255,.15) 1px, transparent 1px) 0 33.33% / 100% 33.33%;
+      pointer-events: none;
+    }
+
+    .crop-handle {
+      position: absolute;
+      width: 12px; height: 12px;
+      background: #2cb67d;
+      border: 2px solid #fff;
+      border-radius: 2px;
+      z-index: 5;
+      pointer-events: all;
+    }
+    .crop-handle.tl { top: -6px; left: -6px; cursor: nwse-resize; }
+    .crop-handle.tr { top: -6px; right: -6px; cursor: nesw-resize; }
+    .crop-handle.bl { bottom: -6px; left: -6px; cursor: nesw-resize; }
+    .crop-handle.br { bottom: -6px; right: -6px; cursor: nwse-resize; }
+    .crop-handle.tm { top: -6px; left: 50%; transform: translateX(-50%); cursor: ns-resize; }
+    .crop-handle.bm { bottom: -6px; left: 50%; transform: translateX(-50%); cursor: ns-resize; }
+    .crop-handle.ml { top: 50%; left: -6px; transform: translateY(-50%); cursor: ew-resize; }
+    .crop-handle.mr { top: 50%; right: -6px; transform: translateY(-50%); cursor: ew-resize; }
+
+    /* Crop info */
+    #crop-info {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: .85rem;
+      color: #aaa;
+      margin-top: 8px;
+    }
+    #crop-info label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      user-select: none;
+    }
+    #crop-info input[type="checkbox"] {
+      accent-color: #2cb67d;
+      width: 16px; height: 16px;
+    }
+
+    /* ---- Timeline ---- */
+    #timeline-container {
+      position: relative;
+      width: 100%;
+      margin: 16px 0;
+      user-select: none;
+    }
+    #thumbnails {
+      display: flex;
+      width: 100%;
+      height: 64px;
+      border-radius: 6px;
+      overflow: hidden;
+      background: #111;
+    }
+    #thumbnails canvas {
+      flex: 1 1 0;
+      height: 64px;
+      object-fit: cover;
+    }
+
+    /* Zoom slider */
+    #zoom-container {
+      position: relative;
+      width: 100%;
+      height: 28px;
+      margin-top: 6px;
+    }
+    #zoom-track {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 100%;
+      height: 6px;
+      background: #333;
+      border-radius: 3px;
+    }
+    #zoom-highlight {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      height: 6px;
+      background: #555;
+      border-radius: 3px;
+      cursor: grab;
+    }
+    #zoom-highlight:active { cursor: grabbing; }
+    .zoom-handle {
+      position: absolute;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: 14px;
+      height: 22px;
+      background: #888;
+      border-radius: 4px;
+      cursor: ew-resize;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .zoom-handle:hover { background: #aaa; }
+    .zoom-handle::after {
+      content: '';
+      width: 2px;
+      height: 10px;
+      background: #333;
+      border-radius: 1px;
+    }
+    #zoom-label {
+      font-size: .75rem;
+      color: #666;
+      text-align: center;
+      margin-top: 2px;
+    }
+
+    /* Selection overlay */
+    #selection-overlay {
+      position: absolute;
+      top: 0;
+      height: 64px;
+      pointer-events: none;
+    }
+    #selection-highlight {
+      position: absolute;
+      top: 0;
+      height: 100%;
+      background: rgba(127, 90, 240, .25);
+      border-top: 2px solid #7f5af0;
+      border-bottom: 2px solid #7f5af0;
+      cursor: grab;
+      pointer-events: all;
+    }
+    #selection-highlight:active { cursor: grabbing; }
+    .handle {
+      position: absolute;
+      top: -4px;
+      width: 14px;
+      height: 72px;
+      background: #7f5af0;
+      border-radius: 4px;
+      cursor: ew-resize;
+      pointer-events: all;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .handle::after {
+      content: '';
+      width: 2px;
+      height: 24px;
+      background: #fff;
+      border-radius: 1px;
+    }
+    #handle-start { left: 0; transform: translateX(-50%); }
+    #handle-end   { right: 0; transform: translateX(50%); }
+
+    /* Time labels */
+    #time-info {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: .85rem;
+      color: #aaa;
+      margin-top: 6px;
+    }
+    #time-info label {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    #time-info input {
+      background: #2a2a3e;
+      color: #eee;
+      border: 1px solid #444;
+      border-radius: 4px;
+      padding: 2px 6px;
+      font-size: .85rem;
+      font-family: monospace;
+      width: 90px;
+      text-align: center;
+    }
+    #time-info input:focus {
+      border-color: #7f5af0;
+      outline: none;
+    }
+
+    /* ---- Output options ---- */
+    #output-options {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin: 10px 0 4px;
+      font-size: .85rem;
+      color: #aaa;
+    }
+    #output-options label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      user-select: none;
+    }
+    #output-options select {
+      background: #2a2a3e;
+      color: #eee;
+      border: 1px solid #444;
+      border-radius: 4px;
+      padding: 3px 6px;
+      font-size: .85rem;
+    }
+    #output-options input[type="checkbox"] {
+      accent-color: #7f5af0;
+      width: 15px; height: 15px;
+    }
+
+    /* Resize row */
+    #resize-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: .85rem;
+      color: #aaa;
+    }
+    #resize-row input[type="number"] {
+      background: #2a2a3e;
+      color: #eee;
+      border: 1px solid #444;
+      border-radius: 4px;
+      padding: 3px 6px;
+      font-size: .85rem;
+      width: 68px;
+      text-align: center;
+      -moz-appearance: textfield;
+    }
+    #resize-row input[type="number"]::-webkit-inner-spin-button,
+    #resize-row input[type="number"]::-webkit-outer-spin-button {
+      opacity: 1;
+    }
+    #ratio-lock-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 2px 4px;
+      font-size: 1rem;
+      line-height: 1;
+      color: #7f5af0;
+      border-radius: 4px;
+      transition: background .15s;
+    }
+    #ratio-lock-btn:hover { background: rgba(127,90,240,.15); }
+    #ratio-lock-btn.unlocked { color: #555; }
+    .resize-x { color: #666; font-size: .8rem; }
+
+    /* ---- Controls ---- */
+    #controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin: 14px 0 8px;
+      flex-wrap: wrap;
+    }
+    button {
+      padding: 10px 22px;
+      border: none;
+      border-radius: 8px;
+      font-size: .9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .2s;
+    }
+    button:disabled { background: #444 !important; color: #777 !important; cursor: not-allowed; }
+    #play-btn {
+      background: #2cb67d;
+      color: #fff;
+    }
+    #play-btn:hover:not(:disabled) { background: #24a06d; }
+    #save-mp4-btn {
+      background: #7f5af0;
+      color: #fff;
+    }
+    #save-mp4-btn:hover:not(:disabled) { background: #6b46e0; }
+    #save-gif-btn {
+      background: #e07b39;
+      color: #fff;
+    }
+    #save-gif-btn:hover:not(:disabled) { background: #c96a2f; }
+    #reset-btn {
+      background: #333;
+      color: #ccc;
+    }
+    #reset-btn:hover { background: #444; }
+
+    /* ---- Progress ---- */
+    #progress-container { display: none; width: 720px; max-width: 95vw; margin-top: 12px; }
+    #progress-bar-bg {
+      width: 100%;
+      height: 8px;
+      background: #333;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    #progress-bar {
+      height: 100%;
+      width: 0%;
+      background: #7f5af0;
+      transition: width .15s;
+    }
+    #progress-text {
+      text-align: center;
+      margin-top: 6px;
+      font-size: .85rem;
+      color: #aaa;
+    }
+  </style>
+</head>
+<body>
+
+<h1>Video Trimmer</h1>
+
+<!-- Upload -->
+<div id="drop-zone">
+  <p>Drop a <strong>.mp4</strong> or <strong>.mov</strong> file here, or click to browse</p>
+  <input type="file" id="file-input" accept="video/mp4,video/quicktime,.mp4,.mov">
+</div>
+
+<!-- Preview + Timeline -->
+<div id="preview-section">
+
+  <!-- Video + Crop -->
+  <div id="video-area">
+    <div id="video-resizable">
+      <div id="video-wrapper">
+        <video id="video-preview" preload="auto"></video>
+        <div id="crop-overlay">
+          <div id="crop-dim-top"></div>
+          <div id="crop-dim-bottom"></div>
+          <div id="crop-dim-left"></div>
+          <div id="crop-dim-right"></div>
+          <div id="crop-box">
+            <div class="crop-handle tl" data-dir="tl"></div>
+            <div class="crop-handle tr" data-dir="tr"></div>
+            <div class="crop-handle bl" data-dir="bl"></div>
+            <div class="crop-handle br" data-dir="br"></div>
+            <div class="crop-handle tm" data-dir="tm"></div>
+            <div class="crop-handle bm" data-dir="bm"></div>
+            <div class="crop-handle ml" data-dir="ml"></div>
+            <div class="crop-handle mr" data-dir="mr"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="video-resize-handle"></div>
+  </div>
+
+  <div id="full-width-area">
+    <div id="crop-info">
+      <span id="crop-size-label">Crop: full frame</span>
+      <label><input type="checkbox" id="keep-ratio-cb" checked> Keep aspect ratio</label>
+    </div>
+
+    <!-- Timeline -->
+    <div id="timeline-container">
+      <div id="thumbnails"></div>
+      <div id="selection-overlay">
+        <div id="selection-highlight"></div>
+        <div class="handle" id="handle-start"></div>
+        <div class="handle" id="handle-end"></div>
+      </div>
+    </div>
+
+    <!-- Zoom slider -->
+    <div id="zoom-container">
+      <div id="zoom-track"></div>
+      <div id="zoom-highlight"></div>
+      <div class="zoom-handle" id="zoom-handle-left"></div>
+      <div class="zoom-handle" id="zoom-handle-right"></div>
+    </div>
+    <div id="zoom-label">Viewing full timeline — drag handles to zoom in</div>
+
+    <div id="time-info">
+      <label>Start: <input id="start-time-input" type="text" value="0:00.000"></label>
+      <label>Duration: <input id="duration-input" type="text" value="0:00.000"></label>
+      <label>End: <input id="end-time-input" type="text" value="0:00.000"></label>
+    </div>
+
+    <div id="output-options">
+    <label>FPS:
+      <select id="fps-select">
+        <option value="0">Original</option>
+        <option value="60">60</option>
+        <option value="30">30</option>
+        <option value="24">24</option>
+        <option value="15">15</option>
+        <option value="10">10</option>
+      </select>
+    </label>
+    <label><input type="checkbox" id="no-audio-cb"> No audio (MP4)</label>
+    <div id="resize-row">
+      <span>Size:</span>
+      <input type="number" id="out-width" min="2" step="2" placeholder="W">
+      <span class="resize-x">&times;</span>
+      <input type="number" id="out-height" min="2" step="2" placeholder="H">
+      <button id="ratio-lock-btn" title="Lock aspect ratio">&#128279;</button>
+      <button id="resize-reset-btn" style="background:#2a2a3e;color:#aaa;padding:4px 8px;font-size:.75rem;border-radius:4px;">Reset</button>
+    </div>
+  </div>
+
+  <div id="controls">
+    <button id="play-btn" disabled>&#9654; Play Selection</button>
+    <button id="save-mp4-btn" disabled>Save MP4</button>
+    <button id="save-gif-btn" disabled>Save GIF</button>
+    <button id="reset-btn">Reset</button>
+  </div>
+  </div><!-- /full-width-area -->
+</div>
+
+<!-- Progress -->
+<div id="progress-container">
+  <div id="progress-bar-bg"><div id="progress-bar"></div></div>
+  <p id="progress-text">Loading FFmpeg…</p>
+</div>
+
+<script type="module">
+  // FFmpeg is loaded lazily on first export to keep UI responsive
+  let FFmpeg, fetchFile, coreURL, wasmURL;
+
+  // ---- DOM refs ----
+  const dropZone       = document.getElementById('drop-zone');
+  const fileInput      = document.getElementById('file-input');
+  const previewSection = document.getElementById('preview-section');
+  const videoWrapper   = document.getElementById('video-wrapper');
+  const videoResizable = document.getElementById('video-resizable');
+  const video          = document.getElementById('video-preview');
+  const thumbnailsDiv  = document.getElementById('thumbnails');
+  const overlay        = document.getElementById('selection-overlay');
+  const highlight      = document.getElementById('selection-highlight');
+  const handleStart    = document.getElementById('handle-start');
+  const handleEnd      = document.getElementById('handle-end');
+  const startLabel     = document.getElementById('start-time-input');
+  const endLabel       = document.getElementById('end-time-input');
+  const durationLabel  = document.getElementById('duration-input');
+  const saveMp4Btn     = document.getElementById('save-mp4-btn');
+  const saveGifBtn     = document.getElementById('save-gif-btn');
+  const playBtn        = document.getElementById('play-btn');
+  const resetBtn       = document.getElementById('reset-btn');
+  const progressCont   = document.getElementById('progress-container');
+  const progressBar    = document.getElementById('progress-bar');
+  const progressText   = document.getElementById('progress-text');
+
+  // Crop DOM
+  const cropOverlay  = document.getElementById('crop-overlay');
+  const cropBox      = document.getElementById('crop-box');
+  const cropDimTop   = document.getElementById('crop-dim-top');
+  const cropDimBot   = document.getElementById('crop-dim-bottom');
+  const cropDimLeft  = document.getElementById('crop-dim-left');
+  const cropDimRight = document.getElementById('crop-dim-right');
+  const cropLabel    = document.getElementById('crop-size-label');
+  const keepRatioCb  = document.getElementById('keep-ratio-cb');
+
+  // Resize DOM
+  const outWidthIn    = document.getElementById('out-width');
+  const outHeightIn   = document.getElementById('out-height');
+  const ratioLockBtn  = document.getElementById('ratio-lock-btn');
+  const resizeResetBtn = document.getElementById('resize-reset-btn');
+  let resizeRatioLocked = true;
+
+  // Zoom DOM
+  const zoomContainer   = document.getElementById('zoom-container');
+  const zoomHighlight   = document.getElementById('zoom-highlight');
+  const zoomHandleLeft  = document.getElementById('zoom-handle-left');
+  const zoomHandleRight = document.getElementById('zoom-handle-right');
+  const zoomLabelEl     = document.getElementById('zoom-label');
+
+  // ---- State ----
+  let videoDuration = 0;
+  let trimStart = 0;
+  let trimEnd = 0;
+  let videoFile = null;
+  let ffmpeg = null;
+  let ffmpegLoaded = false;
+  let videoWidth = 0;
+  let videoHeight = 0;
+
+  // Throttled video seek — avoids queueing seeks faster than the browser can decode
+  let seekPending = false;
+  let seekTarget = 0;
+  function seekVideo(time) {
+    seekTarget = time;
+    if (seekPending) return;
+    seekPending = true;
+    video.currentTime = seekTarget;
+    video.onseeked = () => {
+      seekPending = false;
+      if (Math.abs(video.currentTime - seekTarget) > 0.05) {
+        seekPending = true;
+        video.currentTime = seekTarget;
+      }
+    };
+  }
+
+  // Crop state (percentages 0-1 relative to displayed video)
+  let cropX = 0, cropY = 0, cropW = 1, cropH = 1;
+
+  // Zoom state — viewStart/viewEnd are fractions [0,1] of total duration
+  let viewStart = 0, viewEnd = 1;
+
+  const THUMB_COUNT = 20;
+
+  // ---- Helpers ----
+  function fmt(seconds) {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}:${s.toFixed(3).padStart(6, '0')}`;
+  }
+
+  function updateLabels() {
+    startLabel.value    = fmt(trimStart);
+    endLabel.value      = fmt(trimEnd);
+    durationLabel.value = fmt(trimEnd - trimStart);
+  }
+
+  // Parse time string "M:SS.mmm" or "SS.mmm" or "M:SS" back to seconds
+  function parseTime(str) {
+    str = str.trim();
+    let minutes = 0, seconds = 0;
+    const parts = str.split(':');
+    if (parts.length === 2) {
+      minutes = parseInt(parts[0], 10) || 0;
+      seconds = parseFloat(parts[1]) || 0;
+    } else {
+      seconds = parseFloat(parts[0]) || 0;
+    }
+    return Math.max(0, minutes * 60 + seconds);
+  }
+
+  function clampAndUpdate() {
+    trimStart = Math.max(0, Math.min(trimStart, videoDuration - 0.01));
+    trimEnd = Math.max(trimStart + 0.01, Math.min(trimEnd, videoDuration));
+    updateOverlay();
+    seekVideo(trimStart);
+  }
+
+  startLabel.addEventListener('change', () => {
+    trimStart = parseTime(startLabel.value);
+    clampAndUpdate();
+  });
+
+  endLabel.addEventListener('change', () => {
+    trimEnd = parseTime(endLabel.value);
+    clampAndUpdate();
+  });
+
+  durationLabel.addEventListener('change', () => {
+    const dur = parseTime(durationLabel.value);
+    trimEnd = trimStart + dur;
+    clampAndUpdate();
+  });
+
+  function updateOverlay() {
+    // Map absolute trim positions into the current view window
+    const viewDur = viewEnd - viewStart;
+    const pctStart = ((trimStart / videoDuration) - viewStart) / viewDur * 100;
+    const pctEnd   = ((trimEnd / videoDuration) - viewStart) / viewDur * 100;
+    // Clamp to visible area
+    const clampedStart = Math.max(0, Math.min(100, pctStart));
+    const clampedEnd   = Math.max(0, Math.min(100, pctEnd));
+    overlay.style.left  = clampedStart + '%';
+    overlay.style.width = (clampedEnd - clampedStart) + '%';
+    highlight.style.left  = '0%';
+    highlight.style.width = '100%';
+    updateLabels();
+  }
+
+  function updateZoomUI() {
+    zoomHighlight.style.left  = (viewStart * 100) + '%';
+    zoomHighlight.style.width = ((viewEnd - viewStart) * 100) + '%';
+    zoomHandleLeft.style.left  = (viewStart * 100) + '%';
+    zoomHandleRight.style.left = (viewEnd * 100) + '%';
+    const isZoomed = viewStart > 0.001 || viewEnd < 0.999;
+    if (isZoomed) {
+      zoomLabelEl.textContent = `Viewing ${fmt(viewStart * videoDuration)} – ${fmt(viewEnd * videoDuration)}`;
+    } else {
+      zoomLabelEl.textContent = 'Viewing full timeline — drag handles to zoom in';
+    }
+  }
+
+  // ---- Crop rendering ----
+  function updateCropUI() {
+    const W = videoWrapper.clientWidth;
+    const H = videoWrapper.clientHeight;
+    const x = cropX * W, y = cropY * H;
+    const w = cropW * W, h = cropH * H;
+
+    cropBox.style.left   = x + 'px';
+    cropBox.style.top    = y + 'px';
+    cropBox.style.width  = w + 'px';
+    cropBox.style.height = h + 'px';
+
+    // Dim regions
+    cropDimTop.style.height = y + 'px';
+    cropDimBot.style.height = (H - y - h) + 'px';
+    cropDimLeft.style.top    = y + 'px';
+    cropDimLeft.style.height = h + 'px';
+    cropDimLeft.style.width  = x + 'px';
+    cropDimRight.style.top    = y + 'px';
+    cropDimRight.style.height = h + 'px';
+    cropDimRight.style.width  = (W - x - w) + 'px';
+
+    // Label
+    const pw = Math.round(cropW * videoWidth);
+    const ph = Math.round(cropH * videoHeight);
+    if (cropW >= 0.999 && cropH >= 0.999) {
+      cropLabel.textContent = 'Crop: full frame';
+    } else {
+      cropLabel.textContent = `Crop: ${pw}×${ph}`;
+    }
+    // Sync resize inputs to match crop area
+    updateResizeFromCrop();
+  }
+
+  function clampCrop() {
+    cropX = Math.max(0, Math.min(cropX, 1 - cropW));
+    cropY = Math.max(0, Math.min(cropY, 1 - cropH));
+    cropW = Math.max(0.02, Math.min(cropW, 1 - cropX));
+    cropH = Math.max(0.02, Math.min(cropH, 1 - cropY));
+  }
+
+  // ---- Crop dragging ----
+  function initCropDrag() {
+    let mode = null; // 'move' | handle dir
+    let startMouse = { x: 0, y: 0 };
+    let startCrop = { x: 0, y: 0, w: 0, h: 0 };
+
+    const getRelPos = (e) => {
+      const rect = videoWrapper.getBoundingClientRect();
+      const cx = (e.touches ? e.touches[0].clientX : e.clientX);
+      const cy = (e.touches ? e.touches[0].clientY : e.clientY);
+      return { x: (cx - rect.left) / rect.width, y: (cy - rect.top) / rect.height };
+    };
+
+    // Handle clicks
+    cropBox.querySelectorAll('.crop-handle').forEach(h => {
+      const dir = h.dataset.dir;
+      const down = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        mode = dir;
+        startMouse = getRelPos(e);
+        startCrop = { x: cropX, y: cropY, w: cropW, h: cropH };
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+        document.addEventListener('touchmove', onMove, { passive: false });
+        document.addEventListener('touchend', onUp);
+      };
+      h.addEventListener('mousedown', down);
+      h.addEventListener('touchstart', down, { passive: false });
+    });
+
+    // Move crop box
+    cropBox.addEventListener('mousedown', (e) => {
+      if (e.target !== cropBox) return;
+      e.preventDefault();
+      mode = 'move';
+      startMouse = getRelPos(e);
+      startCrop = { x: cropX, y: cropY, w: cropW, h: cropH };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+    cropBox.addEventListener('touchstart', (e) => {
+      if (e.target !== cropBox) return;
+      e.preventDefault();
+      mode = 'move';
+      startMouse = getRelPos(e);
+      startCrop = { x: cropX, y: cropY, w: cropW, h: cropH };
+      document.addEventListener('touchmove', onMove, { passive: false });
+      document.addEventListener('touchend', onUp);
+    }, { passive: false });
+
+    function onMove(e) {
+      if (!mode) return;
+      e.preventDefault();
+      const pos = getRelPos(e);
+      const dx = pos.x - startMouse.x;
+      const dy = pos.y - startMouse.y;
+      const keep = keepRatioCb.checked;
+      const ratio = videoWidth / videoHeight;
+
+      if (mode === 'move') {
+        cropX = startCrop.x + dx;
+        cropY = startCrop.y + dy;
+        cropW = startCrop.w;
+        cropH = startCrop.h;
+      } else {
+        let nx = startCrop.x, ny = startCrop.y;
+        let nw = startCrop.w, nh = startCrop.h;
+
+        const hasL = mode.includes('l');
+        const hasR = mode.includes('r');
+        const hasT = mode.includes('t');
+        const hasB = mode.includes('b');
+
+        if (hasR) nw = startCrop.w + dx;
+        if (hasL) { nw = startCrop.w - dx; nx = startCrop.x + dx; }
+        if (hasB) nh = startCrop.h + dy;
+        if (hasT) { nh = startCrop.h - dy; ny = startCrop.y + dy; }
+
+        // Edge-only handles: tm/bm only change height, ml/mr only change width
+        if (mode === 'tm' || mode === 'bm') { nw = startCrop.w; nx = startCrop.x; }
+        if (mode === 'ml' || mode === 'mr') { nh = startCrop.h; ny = startCrop.y; }
+
+        nw = Math.max(0.02, nw);
+        nh = Math.max(0.02, nh);
+
+        if (keep) {
+          // Compute aspect in normalized coords: ratio_norm = (videoW/videoH) * (displayH/displayW)
+          const displayW = videoWrapper.clientWidth;
+          const displayH = videoWrapper.clientHeight;
+          const ratioNorm = ratio * (displayH / displayW);
+
+          if (mode === 'tm' || mode === 'bm') {
+            // Height changed → adjust width
+            nw = nh * ratioNorm;
+            nx = startCrop.x + (startCrop.w - nw) / 2;
+          } else if (mode === 'ml' || mode === 'mr') {
+            // Width changed → adjust height
+            nh = nw / ratioNorm;
+            ny = startCrop.y + (startCrop.h - nh) / 2;
+          } else {
+            // Corner: use the larger delta to drive
+            const candidateH = nw / ratioNorm;
+            const candidateW = nh * ratioNorm;
+            if (Math.abs(dx) > Math.abs(dy)) {
+              nh = candidateH;
+              if (hasT) ny = startCrop.y + startCrop.h - nh;
+            } else {
+              nw = candidateW;
+              if (hasL) nx = startCrop.x + startCrop.w - nw;
+            }
+          }
+        }
+
+        cropX = nx; cropY = ny; cropW = nw; cropH = nh;
+      }
+
+      clampCrop();
+      updateCropUI();
+    }
+
+    function onUp() {
+      mode = null;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('touchmove', onMove);
+      document.removeEventListener('touchend', onUp);
+    }
+  }
+
+  // ---- Thumbnail generation ----
+  let thumbVideo = null;  // persistent reference for re-generating on zoom
+  let thumbUrl = null;
+
+  async function initThumbVideo(file) {
+    if (thumbUrl) URL.revokeObjectURL(thumbUrl);
+    thumbUrl = URL.createObjectURL(file);
+    thumbVideo = document.createElement('video');
+    thumbVideo.muted = true;
+    thumbVideo.preload = 'auto';
+    thumbVideo.src = thumbUrl;
+    await new Promise((res, rej) => {
+      thumbVideo.onloadedmetadata = res;
+      thumbVideo.onerror = rej;
+    });
+  }
+
+  async function generateThumbnails() {
+    if (!thumbVideo) return;
+    thumbnailsDiv.innerHTML = '';
+    const rangeStart = viewStart * videoDuration;
+    const rangeEnd   = viewEnd * videoDuration;
+    const rangeDur   = rangeEnd - rangeStart;
+    const step = rangeDur / THUMB_COUNT;
+
+    for (let i = 0; i < THUMB_COUNT; i++) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 160;
+      canvas.height = 90;
+      thumbnailsDiv.appendChild(canvas);
+
+      const time = rangeStart + step * i + step / 2;
+      thumbVideo.currentTime = Math.min(time, videoDuration - 0.1);
+      await new Promise(r => { thumbVideo.onseeked = r; });
+
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(thumbVideo, 0, 0, canvas.width, canvas.height);
+    }
+  }
+
+  // ---- Zoom handle dragging ----
+  function initZoomDrag() {
+    let activeZoom = null;
+    const getPctFromX = (clientX) => {
+      const rect = zoomContainer.getBoundingClientRect();
+      return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    };
+
+    const onDown = (which) => (e) => {
+      e.preventDefault();
+      activeZoom = which;
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      document.addEventListener('touchmove', onMove, { passive: false });
+      document.addEventListener('touchend', onUp);
+    };
+
+    let thumbDebounce = null;
+    const onMove = (e) => {
+      if (!activeZoom) return;
+      e.preventDefault();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const pct = getPctFromX(clientX);
+      if (activeZoom === 'left') {
+        viewStart = Math.min(pct, viewEnd - 0.02);
+        viewStart = Math.max(0, viewStart);
+      } else {
+        viewEnd = Math.max(pct, viewStart + 0.02);
+        viewEnd = Math.min(1, viewEnd);
+      }
+      updateZoomUI();
+      updateOverlay();
+      // Debounce thumbnail regeneration while dragging
+      clearTimeout(thumbDebounce);
+      thumbDebounce = setTimeout(() => generateThumbnails(), 150);
+    };
+
+    const onUp = () => {
+      activeZoom = null;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('touchmove', onMove);
+      document.removeEventListener('touchend', onUp);
+      generateThumbnails();
+    };
+
+    zoomHandleLeft.addEventListener('mousedown', onDown('left'));
+    zoomHandleLeft.addEventListener('touchstart', onDown('left'), { passive: false });
+    zoomHandleRight.addEventListener('mousedown', onDown('right'));
+    zoomHandleRight.addEventListener('touchstart', onDown('right'), { passive: false });
+
+    // ---- Drag the highlight bar to pan the zoom range ----
+    let panStart = null;
+    let panViewStart = 0, panViewEnd = 0;
+
+    zoomHighlight.style.pointerEvents = 'all';
+
+    const panDown = (e) => {
+      // Ignore if clicking on a handle
+      if (e.target.classList.contains('zoom-handle')) return;
+      e.preventDefault();
+      const rect = zoomContainer.getBoundingClientRect();
+      const cx = e.touches ? e.touches[0].clientX : e.clientX;
+      panStart = (cx - rect.left) / rect.width;
+      panViewStart = viewStart;
+      panViewEnd = viewEnd;
+      document.addEventListener('mousemove', panMove);
+      document.addEventListener('mouseup', panUp);
+      document.addEventListener('touchmove', panMove, { passive: false });
+      document.addEventListener('touchend', panUp);
+    };
+
+    const panMove = (e) => {
+      if (panStart === null) return;
+      e.preventDefault();
+      const rect = zoomContainer.getBoundingClientRect();
+      const cx = e.touches ? e.touches[0].clientX : e.clientX;
+      const pct = (cx - rect.left) / rect.width;
+      const delta = pct - panStart;
+      const span = panViewEnd - panViewStart;
+      let newStart = panViewStart + delta;
+      let newEnd = panViewEnd + delta;
+      // Clamp to [0, 1]
+      if (newStart < 0) { newStart = 0; newEnd = span; }
+      if (newEnd > 1) { newEnd = 1; newStart = 1 - span; }
+      viewStart = newStart;
+      viewEnd = newEnd;
+      updateZoomUI();
+      updateOverlay();
+      clearTimeout(thumbDebounce);
+      thumbDebounce = setTimeout(() => generateThumbnails(), 150);
+    };
+
+    const panUp = () => {
+      panStart = null;
+      document.removeEventListener('mousemove', panMove);
+      document.removeEventListener('mouseup', panUp);
+      document.removeEventListener('touchmove', panMove);
+      document.removeEventListener('touchend', panUp);
+      generateThumbnails();
+    };
+
+    zoomHighlight.addEventListener('mousedown', panDown);
+    zoomHighlight.addEventListener('touchstart', panDown, { passive: false });
+
+    // ---- Mouse wheel on timeline to zoom in/out ----
+    const timelineEl = document.getElementById('timeline-container');
+    timelineEl.addEventListener('wheel', (e) => {
+      if (!videoDuration) return;
+      e.preventDefault();
+      const rect = timelineEl.getBoundingClientRect();
+      // Mouse position as fraction of the current view
+      const mousePct = (e.clientX - rect.left) / rect.width;
+      // Map to absolute fraction [0,1]
+      const viewSpan = viewEnd - viewStart;
+      const mouseAbs = viewStart + mousePct * viewSpan;
+
+      // Zoom factor: scroll up = zoom in, scroll down = zoom out
+      const zoomFactor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
+      let newSpan = Math.max(0.01, Math.min(1, viewSpan * zoomFactor));
+
+      // Keep mouse position anchored at the same spot
+      let newStart = mouseAbs - mousePct * newSpan;
+      let newEnd = mouseAbs + (1 - mousePct) * newSpan;
+
+      // Clamp
+      if (newStart < 0) { newEnd -= newStart; newStart = 0; }
+      if (newEnd > 1) { newStart -= (newEnd - 1); newEnd = 1; }
+      newStart = Math.max(0, newStart);
+      newEnd = Math.min(1, newEnd);
+
+      viewStart = newStart;
+      viewEnd = newEnd;
+      updateZoomUI();
+      updateOverlay();
+      clearTimeout(thumbDebounce);
+      thumbDebounce = setTimeout(() => generateThumbnails(), 200);
+    }, { passive: false });
+  }
+
+  // ---- Timeline handle dragging ----
+  function initDrag() {
+    let activeHandle = null;
+    const getTimeFromX = (clientX) => {
+      const rect = thumbnailsDiv.getBoundingClientRect();
+      let pct = (clientX - rect.left) / rect.width;
+      pct = Math.max(0, Math.min(1, pct));
+      // Map from view window to absolute time
+      const viewDur = viewEnd - viewStart;
+      return (viewStart + pct * viewDur) * videoDuration;
+    };
+
+    const onDown = (handle) => (e) => {
+      e.preventDefault();
+      activeHandle = handle;
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      document.addEventListener('touchmove', onMove, { passive: false });
+      document.addEventListener('touchend', onUp);
+    };
+
+    const onMove = (e) => {
+      if (!activeHandle) return;
+      e.preventDefault();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const t = getTimeFromX(clientX);
+      if (activeHandle === 'start') {
+        trimStart = Math.min(t, trimEnd - 0.1);
+        trimStart = Math.max(0, trimStart);
+      } else {
+        trimEnd = Math.max(t, trimStart + 0.1);
+        trimEnd = Math.min(videoDuration, trimEnd);
+      }
+      updateOverlay();
+      seekVideo(activeHandle === 'start' ? trimStart : trimEnd);
+    };
+
+    const onUp = () => {
+      activeHandle = null;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('touchmove', onMove);
+      document.removeEventListener('touchend', onUp);
+    };
+
+    handleStart.addEventListener('mousedown', onDown('start'));
+    handleStart.addEventListener('touchstart', onDown('start'), { passive: false });
+    handleEnd.addEventListener('mousedown', onDown('end'));
+    handleEnd.addEventListener('touchstart', onDown('end'), { passive: false });
+
+    // ---- Drag the selection highlight to pan the trim range ----
+    let selPanStartX = null;
+    let selPanTrimStart = 0, selPanTrimEnd = 0;
+
+    const selPanDown = (e) => {
+      if (e.target.classList.contains('handle')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = thumbnailsDiv.getBoundingClientRect();
+      const cx = e.touches ? e.touches[0].clientX : e.clientX;
+      selPanStartX = (cx - rect.left) / rect.width;
+      selPanTrimStart = trimStart;
+      selPanTrimEnd = trimEnd;
+      document.addEventListener('mousemove', selPanMove);
+      document.addEventListener('mouseup', selPanUp);
+      document.addEventListener('touchmove', selPanMove, { passive: false });
+      document.addEventListener('touchend', selPanUp);
+    };
+
+    const selPanMove = (e) => {
+      if (selPanStartX === null) return;
+      e.preventDefault();
+      const rect = thumbnailsDiv.getBoundingClientRect();
+      const cx = e.touches ? e.touches[0].clientX : e.clientX;
+      const pct = (cx - rect.left) / rect.width;
+      const viewDur = viewEnd - viewStart;
+      const deltaPct = pct - selPanStartX;
+      const deltaTime = deltaPct * viewDur * videoDuration;
+      const span = selPanTrimEnd - selPanTrimStart;
+      let newStart = selPanTrimStart + deltaTime;
+      let newEnd = selPanTrimEnd + deltaTime;
+      // Clamp to [0, duration]
+      if (newStart < 0) { newStart = 0; newEnd = span; }
+      if (newEnd > videoDuration) { newEnd = videoDuration; newStart = videoDuration - span; }
+      trimStart = newStart;
+      trimEnd = newEnd;
+      updateOverlay();
+      seekVideo(trimStart);
+    };
+
+    const selPanUp = () => {
+      selPanStartX = null;
+      document.removeEventListener('mousemove', selPanMove);
+      document.removeEventListener('mouseup', selPanUp);
+      document.removeEventListener('touchmove', selPanMove);
+      document.removeEventListener('touchend', selPanUp);
+    };
+
+    highlight.addEventListener('mousedown', selPanDown);
+    highlight.addEventListener('touchstart', selPanDown, { passive: false });
+  }
+
+  // ---- Play selection ----
+  let playTimer = null;
+  function playSelection() {
+    video.currentTime = trimStart;
+    video.play();
+    playBtn.textContent = '⏹ Stop';
+
+    const check = () => {
+      if (video.currentTime >= trimEnd || video.paused) {
+        video.pause();
+        video.currentTime = trimStart;
+        playBtn.textContent = '▶ Play Selection';
+        clearInterval(playTimer);
+        playTimer = null;
+        return;
+      }
+    };
+    playTimer = setInterval(check, 50);
+  }
+
+  function stopSelection() {
+    video.pause();
+    if (playTimer) clearInterval(playTimer);
+    playTimer = null;
+    playBtn.textContent = '▶ Play Selection';
+  }
+
+  // ---- File handling ----
+  function handleFile(file) {
+    if (!file) return;
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (ext !== 'mp4' && ext !== 'mov') {
+      alert('Please select an .mp4 or .mov file.');
+      return;
+    }
+    videoFile = file;
+    const url = URL.createObjectURL(file);
+    video.src = url;
+    video.onloadedmetadata = async () => {
+      videoDuration = video.duration;
+      videoWidth = video.videoWidth;
+      videoHeight = video.videoHeight;
+      trimStart = 0;
+      trimEnd = videoDuration;
+      cropX = 0; cropY = 0; cropW = 1; cropH = 1;
+      viewStart = 0; viewEnd = 1;
+      dropZone.style.display = 'none';
+      previewSection.style.display = 'block';
+      updateOverlay();
+      updateZoomUI();
+      // Wait a frame so wrapper has dimensions
+      requestAnimationFrame(() => updateCropUI());
+      await initThumbVideo(file);
+      await generateThumbnails();
+      saveMp4Btn.disabled = false;
+      saveGifBtn.disabled = false;
+      playBtn.disabled = false;
+    };
+  }
+
+  // Drag & drop — prevent browser from opening files dropped anywhere on the page
+  document.addEventListener('dragover', (e) => e.preventDefault());
+  document.addEventListener('drop', (e) => e.preventDefault());
+
+  dropZone.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
+  dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  });
+
+  // ---- FFmpeg ----
+  async function loadFFmpeg() {
+    progressCont.style.display = 'block';
+    progressText.textContent = 'Loading FFmpeg (first time may take a moment)…';
+    progressBar.style.width = '0%';
+
+    // Dynamic imports — only fetched when user actually exports
+    const [ffmpegMod, utilMod, coreMod, wasmMod] = await Promise.all([
+      import('@ffmpeg/ffmpeg'),
+      import('@ffmpeg/util'),
+      import('@ffmpeg/core?url'),
+      import('@ffmpeg/core/wasm?url'),
+    ]);
+    FFmpeg = ffmpegMod.FFmpeg;
+    fetchFile = utilMod.fetchFile;
+    coreURL = coreMod.default;
+    wasmURL = wasmMod.default;
+
+    ffmpeg = new FFmpeg();
+
+    ffmpeg.on('progress', ({ progress }) => {
+      const pct = Math.max(0, Math.min(100, Math.round(progress * 100)));
+      progressBar.style.width = pct + '%';
+      progressText.textContent = `Processing… ${pct}%`;
+    });
+
+    // All assets are served from the same origin via Vite
+    await ffmpeg.load({
+      coreURL,
+      wasmURL,
+    });
+
+    ffmpegLoaded = true;
+  }
+
+  function getCropFilter() {
+    // Compute pixel crop values (must be even for codec compat)
+    const cx = Math.round(cropX * videoWidth / 2) * 2;
+    const cy = Math.round(cropY * videoHeight / 2) * 2;
+    let cw = Math.round(cropW * videoWidth / 2) * 2;
+    let ch = Math.round(cropH * videoHeight / 2) * 2;
+    cw = Math.min(cw, videoWidth - cx);
+    ch = Math.min(ch, videoHeight - cy);
+    return { cx, cy, cw, ch };
+  }
+
+  function needsCrop() {
+    return cropW < 0.999 || cropH < 0.999 || cropX > 0.001 || cropY > 0.001;
+  }
+
+  // ---- Resize helpers ----
+  function getCropPixelSize() {
+    if (needsCrop()) {
+      const c = getCropFilter();
+      return { w: c.cw, h: c.ch };
+    }
+    return { w: videoWidth, h: videoHeight };
+  }
+
+  function updateResizeFromCrop() {
+    const sz = getCropPixelSize();
+    // Only auto-update if user hasn't manually edited, or if values match the previous crop
+    outWidthIn.placeholder = sz.w;
+    outHeightIn.placeholder = sz.h;
+    // If inputs are empty (default / reset), they'll use placeholders as defaults
+  }
+
+  function getOutputSize() {
+    const sz = getCropPixelSize();
+    let w = parseInt(outWidthIn.value, 10);
+    let h = parseInt(outHeightIn.value, 10);
+    if (!w && !h) return null;  // no resize
+    if (!w) w = Math.round(h * (sz.w / sz.h) / 2) * 2;
+    if (!h) h = Math.round(w * (sz.h / sz.w) / 2) * 2;
+    // Ensure even
+    w = Math.round(w / 2) * 2;
+    h = Math.round(h / 2) * 2;
+    return { w: Math.max(2, w), h: Math.max(2, h) };
+  }
+
+  // Ratio lock for resize
+  ratioLockBtn.addEventListener('click', () => {
+    resizeRatioLocked = !resizeRatioLocked;
+    ratioLockBtn.classList.toggle('unlocked', !resizeRatioLocked);
+    ratioLockBtn.title = resizeRatioLocked ? 'Lock aspect ratio' : 'Unlock aspect ratio';
+  });
+
+  outWidthIn.addEventListener('input', () => {
+    if (!resizeRatioLocked) return;
+    const w = parseInt(outWidthIn.value, 10);
+    if (!w) return;
+    const sz = getCropPixelSize();
+    outHeightIn.value = Math.round(w * (sz.h / sz.w) / 2) * 2;
+  });
+
+  outHeightIn.addEventListener('input', () => {
+    if (!resizeRatioLocked) return;
+    const h = parseInt(outHeightIn.value, 10);
+    if (!h) return;
+    const sz = getCropPixelSize();
+    outWidthIn.value = Math.round(h * (sz.w / sz.h) / 2) * 2;
+  });
+
+  resizeResetBtn.addEventListener('click', () => {
+    outWidthIn.value = '';
+    outHeightIn.value = '';
+  });
+
+  async function exportVideo(format) {
+    const btns = [saveMp4Btn, saveGifBtn, playBtn];
+    btns.forEach(b => b.disabled = true);
+
+    try {
+      if (!ffmpegLoaded) await loadFFmpeg();
+
+      progressCont.style.display = 'block';
+      progressText.textContent = 'Writing file…';
+      progressBar.style.width = '0%';
+
+      const inputName = 'input.mp4';
+      await ffmpeg.writeFile(inputName, await fetchFile(videoFile));
+
+      const startStr = trimStart.toFixed(3);
+      const durationStr = (trimEnd - trimStart).toFixed(3);
+      const crop = getCropFilter();
+      const hasCrop = needsCrop();
+
+      const fpsVal = parseInt(document.getElementById('fps-select').value, 10);
+      const noAudio = document.getElementById('no-audio-cb').checked;
+      const outSize = getOutputSize();
+
+      if (format === 'mp4') {
+        const outputName = 'output.mp4';
+        progressText.textContent = 'Trimming video…';
+
+        const args = ['-ss', startStr, '-i', inputName, '-t', durationStr];
+        const needsReencode = hasCrop || fpsVal > 0 || noAudio || outSize;
+        if (needsReencode) {
+          const vFilters = [];
+          if (hasCrop) vFilters.push(`crop=${crop.cw}:${crop.ch}:${crop.cx}:${crop.cy}`);
+          if (outSize) vFilters.push(`scale=${outSize.w}:${outSize.h}`);
+          if (fpsVal > 0) vFilters.push(`fps=${fpsVal}`);
+          if (vFilters.length) args.push('-vf', vFilters.join(','));
+          args.push('-c:v', 'libx264', '-preset', 'fast');
+          if (noAudio) {
+            args.push('-an');
+          } else {
+            args.push('-c:a', 'aac');
+          }
+        } else {
+          args.push('-c', 'copy');
+        }
+        args.push('-avoid_negative_ts', '1', outputName);
+
+        await ffmpeg.exec(args);
+        const data = await ffmpeg.readFile(outputName);
+        download(data.buffer, `trimmed_${baseName()}.mp4`, 'video/mp4');
+        await ffmpeg.deleteFile(outputName);
+      } else {
+        // GIF — two-pass with palette
+        // Step 1: extract the trimmed segment to an intermediate file so we
+        //         only seek once and both passes operate on the same data.
+        const trimmedName = 'trimmed.mp4';
+        const paletteName = 'palette.png';
+        const outputName = 'output.gif';
+
+        progressText.textContent = 'Preparing clip…';
+        await ffmpeg.exec([
+          '-ss', startStr, '-i', inputName, '-t', durationStr,
+          '-c', 'copy', '-avoid_negative_ts', '1',
+          '-y', trimmedName
+        ]);
+
+        let filters = '';
+        if (hasCrop) {
+          filters = `crop=${crop.cw}:${crop.ch}:${crop.cx}:${crop.cy},`;
+        }
+        const gifFps = fpsVal > 0 ? fpsVal : 15;
+        if (outSize) {
+          filters += `fps=${gifFps},scale=${outSize.w}:${outSize.h}:flags=lanczos`;
+        } else {
+          filters += `fps=${gifFps},scale=480:-1:flags=lanczos`;
+        }
+
+        progressText.textContent = 'Generating palette…';
+        await ffmpeg.exec([
+          '-i', trimmedName,
+          '-vf', filters + ',palettegen=stats_mode=diff',
+          '-y', paletteName
+        ]);
+
+        progressText.textContent = 'Encoding GIF…';
+        await ffmpeg.exec([
+          '-i', trimmedName, '-i', paletteName,
+          '-lavfi', filters + '[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5',
+          '-y', outputName
+        ]);
+
+        const data = await ffmpeg.readFile(outputName);
+        download(data.buffer, `trimmed_${baseName()}.gif`, 'image/gif');
+        await ffmpeg.deleteFile(trimmedName);
+        await ffmpeg.deleteFile(paletteName);
+        await ffmpeg.deleteFile(outputName);
+      }
+
+      await ffmpeg.deleteFile(inputName);
+      progressText.textContent = 'Done! File downloaded.';
+      progressBar.style.width = '100%';
+    } catch (err) {
+      console.error(err);
+      progressText.textContent = 'Error: ' + err.message;
+    } finally {
+      btns.forEach(b => b.disabled = false);
+    }
+  }
+
+  function baseName() {
+    return videoFile.name.replace(/\.[^.]+$/, '');
+  }
+
+  function download(buffer, filename, mime) {
+    const blob = new Blob([buffer], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  // ---- Buttons ----
+  saveMp4Btn.addEventListener('click', () => exportVideo('mp4'));
+  saveGifBtn.addEventListener('click', () => exportVideo('gif'));
+  playBtn.addEventListener('click', () => {
+    if (playTimer) stopSelection();
+    else playSelection();
+  });
+  resetBtn.addEventListener('click', () => {
+    stopSelection();
+    video.src = '';
+    videoFile = null;
+    if (thumbUrl) { URL.revokeObjectURL(thumbUrl); thumbUrl = null; }
+    thumbVideo = null;
+    thumbnailsDiv.innerHTML = '';
+    previewSection.style.display = 'none';
+    dropZone.style.display = '';
+    progressCont.style.display = 'none';
+    saveMp4Btn.disabled = true;
+    saveGifBtn.disabled = true;
+    playBtn.disabled = true;
+    fileInput.value = '';
+    viewStart = 0; viewEnd = 1;
+  });
+
+  // Recalculate crop UI on resize
+  window.addEventListener('resize', () => {
+    if (videoFile) updateCropUI();
+  });
+
+  // ---- Video resize bar (vertical drag to resize) ----
+  const videoResizeHandle = document.getElementById('video-resize-handle');
+  {
+    let resizing = false;
+    let startY = 0, startW = 0;
+
+    const rDown = (e) => {
+      e.preventDefault();
+      resizing = true;
+      startY = e.touches ? e.touches[0].clientY : e.clientY;
+      startW = videoResizable.offsetWidth;
+      document.addEventListener('mousemove', rMove);
+      document.addEventListener('mouseup', rUp);
+      document.addEventListener('touchmove', rMove, { passive: false });
+      document.addEventListener('touchend', rUp);
+    };
+
+    const rMove = (e) => {
+      if (!resizing) return;
+      e.preventDefault();
+      const cy = e.touches ? e.touches[0].clientY : e.clientY;
+      const delta = cy - startY;
+      // Map vertical movement to width change using video aspect ratio
+      const vid = document.getElementById('video-preview');
+      const aspect = vid.videoWidth && vid.videoHeight ? vid.videoWidth / vid.videoHeight : 16 / 9;
+      const newW = Math.max(200, startW + delta * aspect);
+      videoResizable.style.width = newW + 'px';
+      updateCropUI();
+    };
+
+    const rUp = () => {
+      resizing = false;
+      document.removeEventListener('mousemove', rMove);
+      document.removeEventListener('mouseup', rUp);
+      document.removeEventListener('touchmove', rMove);
+      document.removeEventListener('touchend', rUp);
+    };
+
+    videoResizeHandle.addEventListener('mousedown', rDown);
+    videoResizeHandle.addEventListener('touchstart', rDown, { passive: false });
+  }
+
+  // ---- Init ----
+  initDrag();
+  initCropDrag();
+  initZoomDrag();
+</script>
+
+</body>
+</html>
