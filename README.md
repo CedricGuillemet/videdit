@@ -2,6 +2,8 @@
 
 A browser-based video trimming and cropping tool. Upload a video, select a time range, adjust the crop area, and export as MP4 or GIF — all client-side with no server required.
 
+![Screenshot](screenshot.png)
+
 ## Features
 
 - **Drag & drop** or click-to-browse file upload (`.mp4` / `.mov`)
