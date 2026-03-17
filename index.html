@@ -305,6 +305,41 @@
     #handle-start { left: 0; transform: translateX(-50%); }
     #handle-end   { right: 0; transform: translateX(50%); }
 
+    /* Playhead caret */
+    #playhead {
+      position: absolute;
+      top: -10px;
+      width: 2px;
+      height: calc(64px + 10px);
+      background: #fff;
+      pointer-events: none;
+      z-index: 5;
+      transform: translateX(-50%);
+      display: none;
+    }
+    #playhead::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 0; height: 0;
+      border-left: 6px solid transparent;
+      border-right: 6px solid transparent;
+      border-top: 8px solid #fff;
+    }
+    #playhead-hitarea {
+      position: absolute;
+      top: -10px;
+      width: 20px;
+      height: calc(64px + 10px);
+      transform: translateX(-50%);
+      cursor: ew-resize;
+      pointer-events: all;
+      z-index: 6;
+      display: none;
+    }
+
     /* Time labels */
     #time-info {
       display: flex;
@@ -516,6 +551,8 @@
         <div class="handle" id="handle-start"></div>
         <div class="handle" id="handle-end"></div>
       </div>
+      <div id="playhead"></div>
+      <div id="playhead-hitarea"></div>
     </div>
 
     <!-- Zoom slider -->
@@ -596,6 +633,8 @@
   const progressCont   = document.getElementById('progress-container');
   const progressBar    = document.getElementById('progress-bar');
   const progressText   = document.getElementById('progress-text');
+  const playhead       = document.getElementById('playhead');
+  const playheadHit    = document.getElementById('playhead-hitarea');
 
   // Crop DOM
   const cropOverlay  = document.getElementById('crop-overlay');
@@ -719,6 +758,17 @@
     highlight.style.left  = '0%';
     highlight.style.width = '100%';
     updateLabels();
+    updatePlayhead();
+  }
+
+  function updatePlayhead() {
+    if (!videoDuration) return;
+    const t = video.currentTime;
+    const viewDur = viewEnd - viewStart;
+    const pct = ((t / videoDuration) - viewStart) / viewDur * 100;
+    const clamped = Math.max(0, Math.min(100, pct));
+    playhead.style.left = clamped + '%';
+    playheadHit.style.left = clamped + '%';
   }
 
   function updateZoomUI() {
@@ -1187,6 +1237,49 @@
     highlight.addEventListener('touchstart', selPanDown, { passive: false });
   }
 
+  // ---- Playhead scrub dragging ----
+  function initPlayheadDrag() {
+    let dragging = false;
+    const getTimeFromX = (clientX) => {
+      const rect = thumbnailsDiv.getBoundingClientRect();
+      let pct = (clientX - rect.left) / rect.width;
+      pct = Math.max(0, Math.min(1, pct));
+      const viewDur = viewEnd - viewStart;
+      return (viewStart + pct * viewDur) * videoDuration;
+    };
+    const clampToSelection = (t) => Math.max(trimStart, Math.min(trimEnd, t));
+
+    const onDown = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragging = true;
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      document.addEventListener('touchmove', onMove, { passive: false });
+      document.addEventListener('touchend', onUp);
+    };
+    const onMove = (e) => {
+      if (!dragging) return;
+      e.preventDefault();
+      const cx = e.touches ? e.touches[0].clientX : e.clientX;
+      const t = clampToSelection(getTimeFromX(cx));
+      seekVideo(t);
+      updatePlayhead();
+    };
+    const onUp = () => {
+      dragging = false;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.removeEventListener('touchmove', onMove);
+      document.removeEventListener('touchend', onUp);
+    };
+    playheadHit.addEventListener('mousedown', onDown);
+    playheadHit.addEventListener('touchstart', onDown, { passive: false });
+  }
+
+  // Update playhead during playback
+  video.addEventListener('timeupdate', updatePlayhead);
+
   // ---- Play selection ----
   let playTimer = null;
   function playSelection() {
@@ -1237,6 +1330,9 @@
       previewSection.style.display = 'block';
       updateOverlay();
       updateZoomUI();
+      playhead.style.display = 'block';
+      playheadHit.style.display = 'block';
+      updatePlayhead();
       // Wait a frame so wrapper has dimensions
       requestAnimationFrame(() => updateCropUI());
       await initThumbVideo(file);
@@ -1515,6 +1611,8 @@
     playBtn.disabled = true;
     fileInput.value = '';
     viewStart = 0; viewEnd = 1;
+    playhead.style.display = 'none';
+    playheadHit.style.display = 'none';
   });
 
   // Recalculate crop UI on resize
@@ -1566,6 +1664,7 @@
 
   // ---- Init ----
   initDrag();
+  initPlayheadDrag();
   initCropDrag();
   initZoomDrag();
 </script>
